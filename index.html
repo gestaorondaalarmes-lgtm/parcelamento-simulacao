@@ -208,6 +208,38 @@
   .copy-ico:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft);}
   .copy-ico:focus-visible{outline:none;box-shadow:0 0 0 3px var(--focus);}
 
+  /* ---------- Registro parcial ---------- */
+  select{
+    font-family:var(--font-sans);
+    font-size:15px;
+    color:var(--ink);
+    background:var(--surface);
+    border:1px solid var(--line-strong);
+    border-radius:var(--radius-sm);
+    padding:11px 12px;
+    cursor:pointer;
+    transition:border-color .15s ease,box-shadow .15s ease;
+  }
+  select:hover{border-color:#C3CAD2;}
+  select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--focus);}
+  select:disabled{opacity:.5;cursor:not-allowed;}
+  .filter{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted);}
+  .filter select{padding:8px 12px;font-size:14px;}
+  .total-box{
+    display:inline-flex;
+    align-items:center;
+    gap:16px;
+    margin-top:14px;
+    padding:13px 18px;
+    background:var(--accent-soft);
+    border:1px solid #CFE7DD;
+    border-radius:var(--radius-sm);
+  }
+  .total-box[hidden]{display:none;}
+  .total-label{font-size:13px;font-weight:500;color:var(--accent-hover);}
+  .total-value{font-family:var(--font-mono);font-size:18px;font-weight:500;color:var(--ink);letter-spacing:-.01em;}
+  .total-box .copy-ico{background:var(--surface);}
+
   .meta{
     display:flex;
     align-items:baseline;
@@ -331,6 +363,47 @@
       </div>
       <p class="note" id="note"></p>
     </section>
+
+    <section class="results" id="partialSection">
+      <div class="results-head">
+        <h2>Registro parcial</h2>
+        <label class="filter" for="startSelect">
+          Considerar a partir da parcela
+          <select id="startSelect" disabled>
+            <option value="">Selecione…</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="table-scroll">
+        <div class="table-inner">
+          <table>
+            <thead>
+              <tr>
+                <th>Referência</th>
+                <th class="val">Valor da parcela</th>
+                <th>Competência</th>
+                <th>Vencimento</th>
+                <th>Descrição</th>
+              </tr>
+            </thead>
+            <tbody id="partialRows">
+              <tr><td colspan="5" class="empty">Selecione a parcela inicial para gerar o registro parcial.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="meta">
+        <span class="summary" id="partialSummary"></span>
+      </div>
+
+      <div class="total-box" id="totalBox" hidden>
+        <span class="total-label">Total selecionado</span>
+        <span class="total-value" id="partialTotal"></span>
+        <button type="button" class="copy-ico" id="copyTotalBtn" aria-label="Copiar valor total selecionado"></button>
+      </div>
+    </section>
   </div>
 
   <div class="toast" id="toast">Copiado</div>
@@ -347,6 +420,12 @@
   const summary = el('summary');
   const note = el('note');
   const toast = el('toast');
+  const startSelect = el('startSelect');
+  const partialRows = el('partialRows');
+  const partialSummary = el('partialSummary');
+  const totalBox = el('totalBox');
+  const partialTotal = el('partialTotal');
+  const copyTotalBtn = el('copyTotalBtn');
 
   let totalCents = 0;
   let currentRows = []; // {ref, val, comp, venc, desc}
@@ -401,13 +480,16 @@
       note.classList.remove('show');
       copyBtn.disabled = true;
       currentRows = [];
+      startSelect.innerHTML = '<option value="">Selecione…</option>';
+      startSelect.disabled = true;
+      renderPartial();
       return;
     }
 
     // Competência é FIXA (parcela de uma compra, não recorrência)
     const [cy, cm, cd] = comp.split('-').map(Number);
     const compStr = pad(cd) + '/' + pad(cm) + '/' + cy;        // data completa DD/MM/AAAA
-    const desc = 'Fatura Mensal Ref. ' + pad(cm) + '/' + cy;   // referência mensal MM/AAAA
+    const descBase = 'Fatura Mensal Ref. ' + pad(cm) + '/' + cy;   // referência mensal MM/AAAA
 
     const [vy, vm, vd] = venc.split('-').map(Number);
 
@@ -425,8 +507,9 @@
 
       const ref = 'PARC. ' + (i+1) + '/' + n;
       const valStr = centsToBR(cents);
+      const desc = descBase + ' - ' + pad(i+1) + '/' + pad(n);
 
-      currentRows.push({ ref, val: valStr, comp: compStr, venc: vencStr, desc });
+      currentRows.push({ ref, val: valStr, comp: compStr, venc: vencStr, desc, cents });
 
       html += '<tr>'
         + cellCopy('ref', ref, 'Copiar referência')
@@ -449,6 +532,8 @@
     } else {
       note.classList.remove('show');
     }
+
+    populateFilter();
   }
 
   function cell(cls, value){
@@ -465,14 +550,67 @@
   function escapeHtml(s){ return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
   function escapeAttr(s){ return s.replace(/"/g,'&quot;').replace(/&/g,'&amp;'); }
 
-  function bindCells(){
-    rowsBody.querySelectorAll('[data-copy]').forEach(node => {
+  function bindCellsIn(container){
+    container.querySelectorAll('[data-copy]').forEach(node => {
       node.addEventListener('click', (e) => {
         e.stopPropagation();
         copyText(node.getAttribute('data-copy')).then(ok => { if(ok) showToast('Copiado'); });
       });
     });
   }
+  function bindCells(){ bindCellsIn(rowsBody); }
+
+  // ----- Registro parcial: "a partir da parcela X" até a última -----
+  function populateFilter(){
+    const n = currentRows.length;
+    const prev = startSelect.value;
+    let opts = '<option value="">Selecione…</option>';
+    for(let i = 1; i <= n; i++){
+      opts += '<option value="' + i + '">' + i + 'ª em diante</option>';
+    }
+    startSelect.innerHTML = opts;
+    startSelect.disabled = false;
+    if(prev && Number(prev) <= n) startSelect.value = prev;   // mantém escolha se ainda válida
+    renderPartial();
+  }
+
+  function renderPartial(){
+    const start = parseInt(startSelect.value, 10);
+    if(!currentRows.length || !start){
+      partialRows.innerHTML = '<tr><td colspan="5" class="empty">Selecione a parcela inicial para gerar o registro parcial.</td></tr>';
+      partialSummary.textContent = '';
+      totalBox.hidden = true;
+      return;
+    }
+    const sel = currentRows.slice(start - 1);   // da selecionada até a última
+    let html = '';
+    let sumCents = 0;
+    sel.forEach(r => {
+      sumCents += r.cents;
+      html += '<tr>'
+        + cellCopy('ref', r.ref, 'Copiar referência')
+        + cell('val', r.val)
+        + cell('comp', r.comp)
+        + cell('venc', r.venc)
+        + cellCopy('desc', r.desc, 'Copiar descrição')
+        + '</tr>';
+    });
+    partialRows.innerHTML = html;
+    bindCellsIn(partialRows);
+
+    const last = currentRows.length;
+    const qtd = sel.length;
+    partialSummary.innerHTML = 'Parcelas ' + start + ' a ' + last + ' · ' + qtd + (qtd === 1 ? ' parcela' : ' parcelas');
+    partialTotal.textContent = brl(sumCents);
+    copyTotalBtn.setAttribute('data-copy', centsToBR(sumCents));
+    totalBox.hidden = false;
+  }
+
+  startSelect.addEventListener('change', renderPartial);
+  copyTotalBtn.innerHTML = copyIco;
+  copyTotalBtn.addEventListener('click', () => {
+    copyText(copyTotalBtn.getAttribute('data-copy')).then(ok => { if(ok) showToast('Total copiado'); });
+  });
 
   // ----- Copiar tabela (TSV, cola direto em planilha) -----
   copyBtn.addEventListener('click', () => {
